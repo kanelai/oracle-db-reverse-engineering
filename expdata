@@ -39,7 +39,7 @@
 #   1.2.0	20110516	Kane Lai	Output CSV files again, using
 #						%%QUOTE%% to replace double quotes
 #   1.2.1	20110609	Kane Lai	Supports Oracle Database 8i
-#   1.3.0       20130829        Kane Lai        Better handling of non-English data
+#   1.3.0	20130829        Kane Lai        Better handling of non-English data
 #
 #
 #

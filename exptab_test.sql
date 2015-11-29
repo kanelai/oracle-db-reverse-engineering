@@ -1,27 +1,27 @@
-drop table exptab_test;
+DROP TABLE exptab_test;
 
-create table exptab_test(
-	a binary_float,
-	b binary_double,
-	c date,
-	d timestamp(6),
-	e raw(100),
-	f blob,
-	g bfile,
-	h varchar2(23),
-	i nvarchar2(55),
-	j char,
-	k nchar,
-	l long,
-	m clob,
-	n nclob,
-	o number,
-	p number(5,0),
-	q number(12,0),
-	r number(28,0),
-	s number(5,8),
-	t number(12,15),
-	u number(29,30),
-	v number(5),
-	w number(28));
-
+CREATE TABLE exptab_test (
+  a BINARY_FLOAT,
+  b BINARY_DOUBLE,
+  c DATE,
+  d TIMESTAMP(6),
+  e RAW(100),
+  f BLOB,
+  g BFILE,
+  h VARCHAR2(23),
+  i NVARCHAR2(55),
+  j CHAR,
+  k NCHAR,
+  l LONG,
+  m CLOB,
+  n NCLOB,
+  o NUMBER,
+  p NUMBER(5, 0),
+  q NUMBER(12, 0),
+  r NUMBER(28, 0),
+  s NUMBER(5, 8),
+  t NUMBER(12, 15),
+  u NUMBER(29, 30),
+  v NUMBER(5),
+  w NUMBER(28)
+);
