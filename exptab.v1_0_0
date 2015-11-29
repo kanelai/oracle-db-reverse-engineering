@@ -1,0 +1,193 @@
+#!/bin/sh
+
+################################################################################
+#
+#	exptab
+#
+#	A tool to export table definitions from Oracle Database 
+#
+#	This tool has been tested in Oracle 10g to give immediately usable
+#	DDL statements
+#
+#	At this time, this script has been certified to work with the following
+#	data types:
+#	NUMBER, VARCHAR2, NVARCHAR2, CHAR, NCHAR, DATE, RAW
+#	However, many of the other data types should also work. Please double
+#	check the output of this script.
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20090528	Kane Lai	First release
+#
+################################################################################
+
+
+version="1.0.0"
+
+if [ $# -lt 2 ]; then
+	echo "exptab v$version - A tool to export table definitions from Oracle Database"
+	echo "Exported table definitions will be named tab_(table_name).sql in the current directory"
+	echo "Supported data types: NUMBER, VARCHAR2, NVARCHAR2, CHAR, NCHAR, DATE"
+	echo "Usage:\t`basename $0` [db_conn_str table_name]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"table_name\": Oracle table name, which is case in-sensitive, e.g. card_info"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+        exit 1
+fi
+
+# change table name to upper case
+tab_name="`echo $2 | tr "[:lower:]" "[:upper:]"`"
+
+# get the lower case tab name
+tab_name_lower="`echo $tab_name | tr "[:upper:]" "[:lower:]"`"
+tab=`echo "tab_"$tab_name_lower".sql" | tr '[$]' '[_]'`
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+set echo off
+set maxdata 50000
+set long 50000
+set longchunksize 1000
+set pages 0 lines 32767
+set heading off
+set verify off
+set termout off
+set feedback off
+set trims on
+set serveroutput on
+spool $tab
+
+
+
+
+----------------------------------
+-- write create statement
+----------------------------------
+
+select 'REM drop table $tab_name_lower;' from dual;
+select 'create table $tab_name_lower(' from dual;
+
+select	lower(chr(9)||column_name||' '||
+	decode(data_type,'VARCHAR2','VARCHAR2('||char_length||')',
+			 'NVARCHAR2','NVARCHAR2('||char_length||')',
+			 'CHAR','CHAR('||char_length||')',
+			 'NCHAR','NCHAR('||char_length||')',
+			 'RAW','RAW('||data_length||')',
+			 'NUMBER','NUMBER'||decode(data_precision,null,null,'('||data_precision||decode(data_scale,0,null,','||data_scale)||')'),
+			 data_type)||
+	decode(nullable,'N',' NOT NULL',null))||
+	decode(column_id,(select max(column_id) from user_tab_columns where table_name = '$tab_name'),null,',')
+from	user_tab_columns
+where	table_name = '$tab_name'
+order by column_id;
+
+select ');' from dual;
+
+
+
+
+declare
+	v_tab_count	pls_integer;
+	v_con_count	pls_integer;
+	v_con_name	varchar2(50);
+	v_col_count	pls_integer;
+	v_index		pls_integer;
+	v_str		varchar2(1000) := '';
+	v_tmp		varchar2(50);
+begin
+
+	----------------------------------
+	-- check for existence of the table
+	----------------------------------
+
+	select	count(*)
+	into	v_tab_count
+	from	user_tables
+	where	table_name = '$tab_name';
+	if v_tab_count != 1 then
+		dbms_output.put_line('###ERROR###');
+		return;
+	end if;
+
+	----------------------------------
+	-- write primary key statement
+	----------------------------------
+
+	select	count(*)
+	into	v_con_count
+	from	user_constraints
+	where	table_name = '$tab_name'
+	and	constraint_type = 'P';
+
+	if v_con_count = 1 then
+		select	unique constraint_name
+		into	v_con_name
+		from	user_constraints
+		where	table_name = '$tab_name'
+		and	constraint_type = 'P';
+
+		select	count(*)
+		into	v_col_count
+		from	user_cons_columns
+		where	table_name = '$tab_name'
+		and	constraint_name = v_con_name;
+
+		v_str := 'alter table $tab_name_lower add constraint '||lower(v_con_name)||' primary key (';
+
+		for v_index in 1..v_col_count loop
+			select	lower(column_name)
+			into	v_tmp
+			from	(select	column_name, position
+				from	user_cons_columns
+				where	table_name = '$tab_name'
+				and	constraint_name = v_con_name
+				order by position)
+			where	position = v_index;
+
+			if v_index != v_col_count then
+				v_str := v_str||v_tmp||', ';
+			else
+				v_str := v_str||v_tmp||');';
+			end if;
+		end loop;
+
+		dbms_output.put_line(v_str);
+	end if;
+
+exception
+        when others then
+		dbms_output.put_line('###ERROR###');
+		dbms_output.put_line('Error '||sqlcode||' - '||sqlerrm);
+end;
+/
+
+
+
+
+spool off
+exit
+EOSQL
+
+if [ -f $tab ]; then
+	# confirm the export was successful
+	is_error=`grep -ic "###ERROR###" $tab`
+	if [ $is_error -gt 0 ]; then
+		echo "Failed to export definitions of table \"$tab_name\", probably because the table does not exist or is inaccessible"
+		rm $tab
+		exit 1
+	fi
+
+	# export successful
+	echo "Definitions of table \"$tab_name\" exported successfully"
+else
+	echo "Failed to logon to Oracle Database, probably because the connection string is incorrect"
+	exit 1
+fi
+ 

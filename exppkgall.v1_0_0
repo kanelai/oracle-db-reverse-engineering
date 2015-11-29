@@ -1,0 +1,66 @@
+#!/bin/sh
+
+################################################################################
+#
+#	exppkgall
+#
+#	A tool to export all packages from Oracle Database 
+#
+#	This tool has been tested in SQL*Plus 10 or above to give immediately
+#       loadable package header and body
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20090110	Kane Lai	First release
+#
+################################################################################
+
+
+version="1.0.0"
+
+if [ $# -lt 1 ]; then
+	echo "exppkgall v$version - A tool to export all packages from Oracle Database"
+	echo "Exported package header and body will be named (package_name)_header.sql and (package_name)_body.sql in the current directory"
+	echo "Usage:\t$0 [db_conn_str]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+pkglist="pkglist.txt"
+
+# generate export script
+export_script="/tmp/export.sql"
+echo "" > $export_script
+echo "set echo off" >> $export_script
+echo "set pages 0 lines 500" >> $export_script
+echo "set heading off" >> $export_script
+echo "set verify off" >> $export_script
+echo "set termout off" >> $export_script
+echo "set feedback off" >> $export_script
+echo "set trims on" >> $export_script
+echo >> $export_script
+echo "spool $pkglist" >> $export_script
+echo "select object_name from user_objects where object_type='PACKAGE';" >> $export_script
+echo "spool off" >> $export_script
+echo >> $export_script
+echo "exit" >> $export_script
+echo >> $export_script
+
+# execute export script
+sqlplus -SL $db_conn_str @$export_script > /dev/null
+
+# export package from db using exppkg
+cat $pkglist | while read line
+do
+	exppkg $db_conn_str $line
+done
+rm $pkglist
+ 

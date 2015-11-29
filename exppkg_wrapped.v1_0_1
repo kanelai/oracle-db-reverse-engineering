@@ -1,0 +1,96 @@
+#!/bin/sh
+
+################################################################################
+#
+#	exppkg_wrapped
+#
+#	A tool to export wrapped packages from Oracle Database 
+#
+#	This tool has been tested in SQL*Plus 8i to give immediately
+#	loadable wrapped package header and body
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20101030	Kane Lai	First release
+#   1.0.1	20120207	Kane Lai	Fixed problem of exporting
+#						source code in wrong order
+#
+################################################################################
+
+
+version="1.0.1"
+
+if [ $# -lt 2 ]; then
+	echo "exppkg_wrapped v$version - A tool to export wrapped packages from Oracle Database"
+	echo "Exported wrapped package header and body will be named (package_name)_header.plb and (package_name)_body.plb in /tmp/exppkg_wrapped in the database server"
+	echo "Usage:\t`basename $0` [db_conn_str package_name]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"package_name\": Oracle package name, which is case in-sensitive, e.g. pkg_paygo"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+# change package name to upper case
+pkg_name="`echo $2 | tr "[:lower:]" "[:upper:]"`"
+
+# get the lower case package name
+pkg_name_lower="`echo $pkg_name | tr "[:upper:]" "[:lower:]"`"
+pkg_header=`echo $pkg_name_lower"_header.plb" | tr '[$]' '[_]'`
+pkg_body=`echo $pkg_name_lower"_body.plb" | tr '[$]' '[_]'`
+dest_dir="/tmp/exppkg_wrapped/"
+
+mkdir -p "$dest_dir"
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+
+declare
+	v_fd		utl_file.file_type;
+begin
+	v_fd := utl_file.fopen('$dest_dir', '$pkg_header', 'w');
+	utl_file.put_line(v_fd, 'create or replace');
+	for cur_rec in (	select	text
+				from	user_source
+				where	type = 'PACKAGE'
+				and	name = '$pkg_name'
+				order by line) loop
+		utl_file.put(v_fd,cur_rec.text);
+		utl_file.fflush(v_fd);
+	end loop;
+	utl_file.put_line(v_fd, '');
+	utl_file.put_line(v_fd, '/');
+	utl_file.put_line(v_fd, 'show err');
+	utl_file.fflush(v_fd);
+	utl_file.fclose(v_fd);
+
+	v_fd := utl_file.fopen('$dest_dir', '$pkg_body', 'w');
+	utl_file.put_line(v_fd, 'create or replace');
+	for cur_rec in (	select	text
+				from	user_source
+				where	type = 'PACKAGE BODY'
+				and	name = '$pkg_name'
+				order by line) loop
+		utl_file.put(v_fd, cur_rec.text);
+		utl_file.fflush(v_fd);
+	end loop;
+	utl_file.put_line(v_fd, '');
+	utl_file.put_line(v_fd, '/');
+	utl_file.put_line(v_fd, 'show err');
+	utl_file.fflush(v_fd);
+	utl_file.fclose(v_fd);
+end;
+/
+
+exit
+EOSQL
+
+#mv $dest_dir$pkg_header ./
+#mv $dest_dir$pkg_body ./
+

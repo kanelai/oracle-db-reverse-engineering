@@ -1,0 +1,79 @@
+#!/bin/sh
+
+################################################################################
+#
+#	expproc
+#
+#	A tool to export procedures from Oracle Database 
+#
+#	This tool has been tested in Oracle Database 7 to give immediately loadable
+#	procedures
+#
+#	Known issues:
+#	- exported wrapped source could not be loaded back to the DB; extra new lines should be removed every 4000 characters
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	200902525	Kane Lai	First release
+#
+################################################################################
+
+
+version="1.0.0"
+
+if [ $# -lt 2 ]; then
+	echo "expproc v$version - A tool to export procedures from Oracle Database"
+	echo "Exported procedures will be named proc_(procedure_name).sql in the current directory"
+	echo "Usage:	`basename $0` [db_conn_str procedure_name]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"procedure_name\": Oracle procedure name, which is case in-sensitive, e.g. do_batch_job"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+        exit 1
+fi
+
+# change procedure name to upper case
+proc_name="`echo $2 | tr "[:lower:]" "[:upper:]"`"
+
+# get the lower case procedure name
+proc_name_lower="`echo $proc_name | tr "[:upper:]" "[:lower:]"`"
+proc=`echo "proc_"$proc_name_lower".sql" | tr '[$]' '[_]'`
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+set echo off
+set maxdata 50000
+set long 50000
+set longchunksize 1000
+set pages 0 lines 32767
+set heading off
+set verify off
+set termout off
+set feedback off
+set trims on
+set timing off
+spool $proc
+prompt create or replace
+select text from user_source where name='$proc_name' and type='PROCEDURE';
+prompt /
+prompt show err
+spool off
+exit
+EOSQL
+
+# confirm the export was successful
+is_ok=`grep -ic $proc_name $proc`
+if [ $is_ok -lt 1 ]; then
+	echo "Failed to export procedure \"$proc_name\", probably because the procedure does not exist or is inaccessible"
+	rm $proc
+	exit 1
+fi
+
+# export successful
+echo "Procedure \"$proc_name\" exported successfully"
+ 

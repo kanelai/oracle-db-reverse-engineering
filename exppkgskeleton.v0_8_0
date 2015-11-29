@@ -1,0 +1,145 @@
+#!/bin/sh
+
+################################################################################
+#
+#	exppkgskeleton
+#
+#	A tool to export packages skeleton from Oracle Database (Using the
+#	DESCRIBE command in SQL*Plus)
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   0.8.0	20110607	Kane Lai	First beta release
+#
+################################################################################
+
+
+version="0.8.0"
+
+if [ $# -lt 2 ]; then
+	echo "exppkgskeleton v$version - A tool to export packages skeleton from Oracle Database"
+	echo "Exported package header and body will be named (package_name)_header.sql and (package_name)_body.sql in the current directory"
+	echo "Usage:\t`basename $0` [db_conn_str package_name]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"package_name\": Oracle package name, which is case in-sensitive, e.g. pkg_paygo"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+# change package name to upper case
+pkg_name="`echo $2 | awk 'BEGIN{FS="@"}{print toupper($1)}'`"
+
+# try to get DB link name
+db_link_name=`echo $2 | awk 'BEGIN{FS="@"}{if (length($2)>0) printf("@%s",$2);}'`
+
+# get the lower case package name
+pkg_name_lower="`echo $pkg_name | tr "[:upper:]" "[:lower:]"`"
+pkg_header=`echo $pkg_name_lower"_header.sql" | tr '[$]' '[_]'`
+pkg_body=`echo $pkg_name_lower"_body.sql" | tr '[$]' '[_]'`
+pkg_desc=`echo "/tmp/"$pkg_name_lower"_desc.txt" | tr '[$]' '[_]'`
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+spool $pkg_desc
+desc $pkg_name$db_link_name
+spool off
+exit
+EOSQL
+
+# confirm the export of package header was successful
+is_desc_ok=`egrep -c "^ERROR" $pkg_desc 2>/dev/null`
+if [ "$is_desc_ok" -ne 0 ]; then
+	echo "Failed to export package \"$pkg_name\", probably because the package does not exist or is inaccessible"
+#	rm $pkg_desc > /dev/null 2>&1
+	exit 1
+fi
+
+# generate package body
+cat /dev/null > $pkg_body
+echo "create or replace" >> $pkg_body
+echo "package body $pkg_name_lower" >> $pkg_body
+echo "as" >> $pkg_body
+echo "" >> $pkg_body
+echo "" >> $pkg_body
+nawk '
+BEGIN {
+	current_name = "";
+	is_inside_function = 0;
+	is_inside_procedure = 0;
+}
+
+function ltrim(s) { sub(/^[ \t]+/, "", s); return s }
+function rtrim(s) { sub(/[ \t]+$/, "", s); return s }
+function trim(s)  { return rtrim(ltrim(s)); }
+function floor(n) { if (n>=0) { return int(n); } else { return int(n)-1; } }
+
+function print_header() {
+	printf("%s %s(\n", tolower($1), current_name);
+}
+
+function print_footer() {
+	printf("\t)\n");
+	printf("as\n");
+	printf("begin\n");
+	printf("\tnull;\n");
+	printf("end %s;\n", current_name);
+	printf("\n");
+	printf("\n");
+}
+
+$0 !~ /[a-z-]|^$/ {
+	if ($1 ~ /^FUNCTION|^PROCEDURE/) {
+		if (is_inside_function==1 || is_inside_procedure==1) {
+			print_footer();
+		}
+
+		current_name = tolower($2);
+		print_header();
+
+		if ($1 ~ /^FUNCTION/) {
+			is_inside_function = 1;
+			is_inside_procedure = 0;
+		} else if ($1 ~ /^PROCEDURE/) {
+			is_inside_function = 0;
+			is_inside_procedure = 1;
+		}
+	} else {
+		tab_str = "";
+		for (i=0; i<4-floor(int(length($1)/8)); i++) {
+			tab_str = tab_str"\t";
+		}
+
+		gsub(/\([0-9]+\)/, "", $2);
+		gsub(/IN\/OUT/, "IN OUT", $3);
+
+		if ($4 != "") {
+			printf("\t%s%s%s\t%s := null,\n", tolower($1), tab_str, tolower($3), tolower($2));
+		} else {
+			printf("\t%s%s%s\t%s,\n", tolower($1), tab_str, tolower($3), tolower($2));
+		}
+	}
+}
+
+END {
+	if (is_inside_function==1 || is_inside_procedure==1) {
+		print_footer();
+	}
+}
+' $pkg_desc >> $pkg_body
+echo "end $pkg_name_lower;" >> $pkg_body
+echo "/" >> $pkg_body
+echo "show err" >> $pkg_body
+
+# generate package header from body
+cat $pkg_body | egrep -v '^end|^begin|^as|^	null' | sed 's/^package body/package/g' | sed 's/)/);/g' > $pkg_header
+
+# export successful
+echo "Package \"$pkg_name\" exported successfully"
+

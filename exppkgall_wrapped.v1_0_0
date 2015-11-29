@@ -1,0 +1,89 @@
+#!/bin/sh
+
+################################################################################
+#
+#	exppkgall_wrapped
+#
+#	A tool to export all wrapped packages from Oracle Database 
+#
+#	This tool has been tested in SQL*Plus 8i to give immediately
+#	loadable wrapped package header and body
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20101030	Kane Lai	First release
+#
+################################################################################
+
+
+version="1.0.0"
+
+if [ $# -lt 1 ]; then
+	echo "exppkgall_wrapped v$version - A tool to export all wrapped packages from Oracle Database"
+	echo "Exported package header and body will be named (package_name)_header.plb and (package_name)_body.plb in /tmp/exppkg_wrapped in the database server"
+	echo "Usage:	`basename $0` [db_conn_str]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+pkglist="pkglist.txt"
+load_pkg_script="load_pkg_wrapped.sql"
+unwrap_script="unwrap_pkg_8i.bat"
+
+# generate export script
+export_script="/tmp/export.sql"
+echo "" > $export_script
+echo "set echo off" >> $export_script
+echo "set pages 0 lines 32767" >> $export_script
+echo "set heading off" >> $export_script
+echo "set verify off" >> $export_script
+echo "set termout off" >> $export_script
+echo "set feedback off" >> $export_script
+echo "set trims on" >> $export_script
+echo "set scan off" >> $export_script
+echo "set timing off" >> $export_script
+echo >> $export_script
+echo "spool $pkglist" >> $export_script
+echo "select object_name from user_objects where object_type='PACKAGE' and object_name not like '%/%' and object_name in (select name from user_source where lower(text) like '%wrapped%' and line=1) order by object_name;" >> $export_script
+echo "spool off" >> $export_script
+echo >> $export_script
+echo "exit" >> $export_script
+echo >> $export_script
+
+# execute export script
+sqlplus -SL $db_conn_str @$export_script > /dev/null
+
+# prepare script to load pkg automatically
+if [ -f $load_pkg_script ]; then
+	rm $load_pkg_script
+fi
+touch $load_pkg_script
+if [ -f $unwrap_script ]; then
+	rm $unwrap_script
+fi
+touch $unwrap_script
+
+# export package from db using exppkg
+cat $pkglist | tr '[:upper:]' '[:lower:]' | while read line
+do
+	echo `dirname $0`/exppkg_wrapped $db_conn_str $line
+	echo '@'$line'_header.plb' | tr '[$]' '[_]' | cat - $load_pkg_script > /tmp/out && mv /tmp/out $load_pkg_script
+	if [ -f `echo $line'_body.plb' | tr '[$]' '[_]'` ]; then
+		echo '@'$line'_body.plb' | tr '[$]' '[_]' >> $load_pkg_script
+	fi
+
+	echo 'copy '$line'_body.plb tmp.sql' >> $unwrap_script
+	echo 'rewrap tmp.sql' >> $unwrap_script
+	echo 'del tmp.sql' >> $unwrap_script
+	echo 'rename TMP.SQ '$line'_body.sql' >> $unwrap_script
+done
+rm $pkglist
+

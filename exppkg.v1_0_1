@@ -1,0 +1,98 @@
+#!/bin/sh
+
+################################################################################
+#
+#	exppkg
+#
+#	A tool to export packages from Oracle Database 
+#
+#	This tool has been tested in SQL*Plus 10 or above to give immediately
+#       loadable package header and body
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20081217	Kane Lai	First release
+#   1.0.1	20090110	Kane Lai	Reversed the order of the input
+#                                               parameters
+#                                               Fixed bugs
+#
+################################################################################
+
+
+version="1.0.1"
+
+if [ $# -lt 2 ]; then
+	echo "exppkg v$version - A tool to export packages from Oracle Database"
+	echo "Exported package header and body will be named (package_name)_header.sql and (package_name)_body.sql in the current directory"
+	echo "Usage:\t$0 [db_conn_str package_name]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"package_name\": Oracle package name, which is case in-sensitive, e.g. pkg_paygo"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+# change package name to upper case
+pkg_name="`echo $2 | tr "[:lower:]" "[:upper:]"`"
+
+# get the lower case package name
+pkg_name_lower="`echo $pkg_name | tr "[:upper:]" "[:lower:]"`"
+pkg_header=$pkg_name_lower"_header.sql"
+pkg_body=$pkg_name_lower"_body.sql"
+
+# generate export script
+export_script="/tmp/export.sql"
+echo "" > $export_script
+echo "set echo off" >> $export_script
+echo "set pages 0 lines 500" >> $export_script
+echo "set heading off" >> $export_script
+echo "set verify off" >> $export_script
+echo "set termout off" >> $export_script
+echo "set feedback off" >> $export_script
+echo "set trims on" >> $export_script
+echo >> $export_script
+echo "spool $pkg_header" >> $export_script
+echo "select TEXT from user_source where TYPE='PACKAGE' and NAME='$pkg_name';" >> $export_script
+echo "spool off" >> $export_script
+echo >> $export_script
+echo "spool $pkg_body" >> $export_script
+echo "select TEXT from user_source where TYPE='PACKAGE BODY' and NAME='$pkg_name';" >> $export_script
+echo "spool off" >> $export_script
+echo >> $export_script
+echo "exit" >> $export_script
+echo >> $export_script
+
+# execute export script
+sqlplus -SL $db_conn_str @$export_script > /dev/null
+
+# confirm the export of package header was successful
+is_header_ok=`grep -ic $pkg_name $pkg_header`
+is_body_ok=`grep -ic $pkg_name $pkg_body`
+if [ $is_header_ok -lt 1 ]; then
+	echo "Failed to export package \"$pkg_name\", probably because the package does not exist or is inaccessible"
+        rm $pkg_header $pkg_body
+	exit 1
+fi
+
+# fix the exported package so that they can be loaded to Oracle Database without modifications
+echo "create or replace" | cat - $pkg_header > /tmp/out && mv /tmp/out $pkg_header
+echo "/\nshow err\n" >> $pkg_header
+
+# confirm the export of package body was successful
+if [ $is_body_ok -lt 1 ]; then
+	echo "No package body was found for \"$pkg_name\""
+        rm $pkg_body
+else
+	echo "create or replace" | cat - $pkg_body > /tmp/out && mv /tmp/out $pkg_body
+	echo "/\nshow err\n" >> $pkg_body
+fi
+
+# export successful
+echo "Package \"$pkg_name\" exported successfully"
+ 

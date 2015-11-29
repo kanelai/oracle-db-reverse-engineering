@@ -1,0 +1,101 @@
+#!/bin/sh
+
+################################################################################
+#
+#	expdataall
+#
+#	A tool to generate script to export all data from Oracle Database
+#
+#	This tool has been tested in Oracle 10g to generate script to export
+#	data to CSV documents for use with SQL*Loader
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20090709	Kane Lai	First release
+#   1.0.1	20090825	Kane Lai	Added progress display in
+#						dump_data.sql
+#
+################################################################################
+
+
+version="1.0.1"
+
+if [ $# -lt 1 ]; then
+	echo "expdataall v$version - A tool to export all data from Oracle Database"
+        echo "Generated script will be named data_(table_name).sql in the current directory"
+        echo "Data exported with the script will be named data_(table_name).csv in the current directory"
+        echo "A script named data_(table_name).sh, which can be used to load the CSV with SQL*Loader, will also be generated in the current directory"
+        echo "Control file for SQL*Loader will be named data_(table_name).ctl"
+	echo "Usage:\t`basename $0` [db_conn_str [date_format]]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"date_format\": Date format, e.g. yyyymmddhh24miss"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+date_format=$2
+
+tablist="tablist.txt"
+dump_data_script="dump_data.sql"
+load_data_script="load_data.sh"
+clean_data_script="clean_data.sql"
+
+# generate export script
+export_script="/tmp/export.sql"
+cat /dev/null > $export_script
+echo "set echo off" >> $export_script
+echo "set pages 0 lines 32767" >> $export_script
+echo "set heading off" >> $export_script
+echo "set verify off" >> $export_script
+echo "set termout off" >> $export_script
+echo "set feedback off" >> $export_script
+echo "set trims on" >> $export_script
+echo "set scan off" >> $export_script
+echo "set timing off" >> $export_script
+echo >> $export_script
+echo "spool $tablist" >> $export_script
+#echo "select tname from tab;" >> $export_script
+echo "select table_name from user_tables where table_name not like '%/%' and temporary = 'N' order by table_name;" >> $export_script
+echo "spool off" >> $export_script
+echo >> $export_script
+echo "exit" >> $export_script
+echo >> $export_script
+
+# execute export script
+sqlplus -SL $db_conn_str @$export_script > /dev/null
+
+# export package from db using expdata
+echo > $load_data_script
+echo "#!/bin/sh" >> $load_data_script
+echo "" >> $load_data_script
+echo "if [ \$# -eq 0 ]; then" >> $load_data_script
+echo "\techo \"Usage:\\t\`basename \$0\` [db_conn_str]\"" >> $load_data_script
+echo "\techo \"    \\\"db_conn_str\\\": Connection string of the Oracle Database to load data into, e.g. admin/mypassword@ora10g\"" >> $load_data_script
+echo "\texit" >> $load_data_script
+echo "fi" >> $load_data_script
+chmod +x $load_data_script
+echo > $dump_data_script
+echo > $clean_data_script
+total_row=`wc -l $tablist | cut -c1-8 | tr -d " "`
+this_row=1
+cat $tablist | tr '[:upper:]' '[:lower:]' | while read line
+do
+	`dirname $0`/expdata $db_conn_str $line $date_format
+        echo '@data_'$line'.sql' | tr '[$]' '[_]' >> $dump_data_script
+#        echo 'prompt ('$this_row'/'$total_row') Data exported from table '$line' successfully' | tr '[$]' '[_]' >> $dump_data_script
+	echo 'truncate table '$line';' | tr '[$]' '[_]' >> $clean_data_script
+	echo `echo 'data_'$line'.sh' | tr '[$]' '[_]'`' $@' >> $load_data_script
+
+	this_row=`expr $this_row + 1`
+done
+rm $tablist
+echo "Common scripts ($dump_data_script, $clean_data_script, $load_data_script) are generated successfully"
+chmod +x $load_data_script
+ 

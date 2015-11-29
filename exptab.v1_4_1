@@ -1,0 +1,359 @@
+#!/bin/sh
+
+################################################################################
+#
+#	exptab
+#
+#	A tool to export table definitions from Oracle Database 
+#
+#	This tool has been tested in Oracle 10g to give immediately usable
+#	DDL statements
+#
+#	At this time, this script has been tested to work with the following
+#	data types:
+#	NUMBER, VARCHAR2, NVARCHAR2, CHAR, NCHAR, DATE, RAW
+#	However, many of the other data types should also work. Please double
+#	check the output of this script.
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20090528	Kane Lai	First release
+#   1.1.0	20090628	Kane Lai	Added export of primary keys and
+#						unique constraints
+#						Allow specifying tablespace for
+#						data and index
+#   1.1.1	20090709	Kane Lai	Support temporary tables
+#   1.2.0	20091223	Kane Lai	Support foreign keys
+#   1.3.0	20100115	Kane Lai	Support indexes
+#   1.4.0	20100728	Kane Lai	Support function-based indexes
+#   1.4.1	20100803	Kane Lai	Support bitmap indexes
+#
+################################################################################
+
+
+version="1.4.1"
+
+if [ $# -lt 2 ]; then
+	echo "exptab v$version - A tool to export table definitions from Oracle Database"
+	echo "Exported table definitions will be named tab_(table_name).sql in the current directory"
+	echo "Supported data types: NUMBER, VARCHAR2, NVARCHAR2, CHAR, NCHAR, DATE"
+	echo "Usage:\t`basename $0` [db_conn_str table_name]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"table_name\": Oracle table name, which is case in-sensitive, e.g. card_info"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+# change table name to upper case
+tab_name="`echo $2 | tr "[:lower:]" "[:upper:]"`"
+
+# get the lower case tab name
+tab_name_lower="`echo $tab_name | tr "[:upper:]" "[:lower:]"`"
+tab=`echo "tab_"$tab_name_lower".sql" | tr '[$]' '[_]'`
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+set echo off
+set maxdata 50000
+set long 50000
+set longchunksize 1000
+set pages 0 lines 32767
+set heading off
+set verify off
+set termout off
+set feedback off
+set trims on
+set serveroutput on
+set scan off
+set timing off
+spool $tab
+
+
+
+
+----------------------------------
+-- write create statement
+----------------------------------
+
+select 'define DATA_TABLESPACE = ''&DATA_TABLESPACE'';' from user_tables where table_name = '$tab_name' and temporary = 'N';
+select 'define INDEX_TABLESPACE = ''&INDEX_TABLESPACE'';' from user_tables where table_name = '$tab_name' and temporary = 'N';
+select '' from user_tables where table_name = '$tab_name' and temporary = 'N';
+select 'REM drop table $tab_name_lower;' from dual;
+prompt
+select decode(temporary, 'N', 'create table $tab_name_lower(', 'create global temporary table $tab_name_lower(') from user_tables where table_name = '$tab_name';
+
+select	lower(chr(9)||column_name||' '||
+	decode(data_type,'VARCHAR2','VARCHAR2('||char_length||')',
+			 'NVARCHAR2','NVARCHAR2('||char_length||')',
+			 'CHAR','CHAR('||char_length||')',
+			 'NCHAR','NCHAR('||char_length||')',
+			 'RAW','RAW('||data_length||')',
+			 'NUMBER','NUMBER'||decode(data_precision,null,null,'('||data_precision||decode(data_scale,0,null,','||data_scale)||')'),
+			 data_type)||
+	decode(nullable,'N',' NOT NULL',null))||
+	decode(column_id,(select max(column_id) from user_tab_columns where table_name = '$tab_name'),null,',')
+from	user_tab_columns
+where	table_name = '$tab_name'
+order by column_id;
+
+select decode(temporary, 'N', ') tablespace &DATA_TABLESPACE;',
+			 decode(duration, 'SYS\$TRANSACTION', ') on commit delete rows;',
+					  'SYS\$SESSION', ') on commit preserve rows;',
+					  '###ERROR###')) from user_tables where table_name = '$tab_name';
+
+prompt
+
+
+
+declare
+	v_tab_count	pls_integer;
+
+	v_con_count	pls_integer;
+
+	v_con_type	user_constraints.constraint_type%type;
+	v_con_name	user_constraints.constraint_name%type;
+	v_con_status	user_constraints.status%type;
+
+	v_col_count	pls_integer;
+	v_col_name	user_cons_columns.column_name%type;
+
+	v_ref_tab_name	user_cons_columns.table_name%type;
+	v_ref_col_count	pls_integer;
+	v_ref_col_name	user_cons_columns.column_name%type;
+
+	v_idx_count	pls_integer;
+	v_idx_name	user_indexes.index_name%type;
+	v_idx_type	user_indexes.index_type%type;
+	v_idx_uniqueness	user_indexes.uniqueness%type;
+	v_idx_col_count	pls_integer;
+	v_idx_col_name	user_ind_columns.column_name%type;
+
+	v_str		varchar2(1000);
+begin
+
+	----------------------------------
+	-- check for existence of the table
+	----------------------------------
+
+	select	count(*)
+	into	v_tab_count
+	from	user_tables
+	where	table_name = '$tab_name';
+	if v_tab_count != 1 then
+		dbms_output.put_line('###ERROR###');
+		return;
+	end if;
+
+	----------------------------------
+	-- write constraint statement
+	----------------------------------
+
+	select	count(*)
+	into	v_con_count
+	from	user_constraints
+	where	table_name = '$tab_name'
+	and	constraint_type in ('P', 'U', 'R');
+
+	for v_con_index in 1..v_con_count loop
+		select	constraint_type,
+			constraint_name,
+			status
+		into	v_con_type,
+			v_con_name,
+			v_con_status
+		from (	select	constraint_type,
+				constraint_name,
+				status,
+				rownum r
+			from	user_constraints
+			where	table_name = '$tab_name'
+			and	constraint_type in ('P', 'U', 'R')
+			order by constraint_type, constraint_name)
+		where	r = v_con_index;
+
+		if v_con_type = 'P' then
+			-- primary key
+			v_str := 'alter table $tab_name_lower add constraint '||lower(v_con_name)||' primary key (';
+		elsif v_con_type = 'U' then
+			-- unique
+			v_str := 'alter table $tab_name_lower add constraint '||lower(v_con_name)||' unique (';
+		elsif v_con_type = 'R' then
+			-- foreign key
+			v_str := 'alter table $tab_name_lower add constraint '||lower(v_con_name)||' foreign key (';
+		end if;
+
+		select	count(*)
+		into	v_col_count
+		from	user_cons_columns
+		where	table_name = '$tab_name'
+		and	constraint_name = v_con_name
+		and	position is not null;
+
+		for v_col_index in 1..v_col_count loop
+			select	lower(column_name)
+			into	v_col_name
+			from (	select	column_name,
+					position,
+					rownum r
+				from	user_cons_columns
+				where	table_name = '$tab_name'
+				and	constraint_name = v_con_name
+				and	position is not null
+				order by position)
+			where	r = v_col_index;
+
+			if v_col_index != v_col_count then
+				v_str := v_str||v_col_name||', ';
+			else
+				if v_con_type in ('P', 'U') then
+					v_str := v_str||v_col_name||') using index tablespace &INDEX_TABLESPACE;';
+				elsif v_con_type = 'R' then
+					v_str := v_str||v_col_name||') references ';
+
+					select	unique table_name
+					into	v_ref_tab_name
+					from	user_cons_columns
+					where	constraint_name = (	select	r_constraint_name
+									from	user_constraints
+									where	constraint_name = v_con_name);
+					v_str := v_str||lower(v_ref_tab_name)||' (';
+
+					select	count(*)
+					into	v_ref_col_count
+					from	user_cons_columns
+					where	constraint_name = (	select	r_constraint_name
+									from	user_constraints
+									where	constraint_name = v_con_name)
+					and	position is not null;
+
+					for v_ref_col_index in 1..v_ref_col_count loop
+						select	lower(column_name)
+						into	v_ref_col_name
+						from (	select	column_name,
+								position,
+								rownum r
+							from	user_cons_columns
+							where	constraint_name = (	select	r_constraint_name
+											from	user_constraints
+											where	constraint_name = v_con_name)
+							and	position is not null
+							order by position)
+						where	r = v_ref_col_index;
+
+						if v_ref_col_index != v_ref_col_count then
+							v_str := v_str||v_ref_col_name||', ';
+						else
+							v_str := v_str||v_ref_col_name||');';
+						end if;
+					end loop;
+
+				end if;
+			end if;
+		end loop;
+
+		dbms_output.put_line(v_str);
+	end loop;
+
+	----------------------------------
+	-- write index statement
+	----------------------------------
+
+	select	count(*)
+	into	v_idx_count
+	from	user_indexes
+	where	table_name = '$tab_name'
+	and	index_name not in (select constraint_name from user_constraints);
+
+	for v_idx_index in 1..v_idx_count loop
+		select	index_name,
+			index_type,
+			uniqueness
+		into	v_idx_name,
+			v_idx_type,
+			v_idx_uniqueness
+		from (	select	index_name,
+				decode(index_type,'BITMAP','bitmap ') index_type,
+				decode(uniqueness,'UNIQUE','unique ','') uniqueness,
+				rownum r
+			from	user_indexes
+			where	table_name = '$tab_name'
+			and	index_name not in (select constraint_name from user_constraints)
+			order by index_name)
+		where	r = v_idx_index;
+		
+		v_str := 'create '||v_idx_type||v_idx_uniqueness||'index '||lower(v_idx_name)||' on $tab_name_lower(';
+
+		select	count(*)
+		into	v_idx_col_count
+		from	user_ind_columns
+		where	table_name = '$tab_name'
+		and	index_name = v_idx_name;
+
+		for v_idx_col_index in 1..v_idx_col_count loop
+			select	column_name
+			into	v_idx_col_name
+			from	user_ind_columns
+			where	table_name = '$tab_name'
+			and	index_name = v_idx_name
+			and	column_position = v_idx_col_index;
+
+			if v_idx_col_name like 'SYS_NC%' then
+				select	column_expression
+				into	v_idx_col_name
+				from	user_ind_expressions
+				where	table_name = '$tab_name'
+				and	index_name = v_idx_name
+				and	column_position = v_idx_col_index;
+
+				v_idx_col_name := translate(v_idx_col_name, 'x"', 'x');
+			end if;
+
+			if v_idx_col_index != v_idx_col_count then
+				v_str := v_str||lower(v_idx_col_name)||', ';
+			else
+				v_str := v_str||lower(v_idx_col_name)||') tablespace &INDEX_TABLESPACE;';
+			end if;
+		end loop;
+
+		dbms_output.put_line(v_str);
+	end loop;
+
+exception
+	when others then
+		dbms_output.put_line('###ERROR###');
+		dbms_output.put_line('Error '||sqlcode||' - '||sqlerrm);
+end;
+/
+
+
+
+
+prompt
+spool off
+exit
+EOSQL
+
+
+if [ -f $tab ]; then
+	# confirm the export was successful
+	is_error=`grep -ic "###ERROR###" $tab`
+	if [ $is_error -gt 0 ]; then
+		echo "Failed to export definitions of table \"$tab_name\", probably because the table does not exist or is inaccessible"
+		rm $tab
+		exit 1
+	fi
+
+	# export successful
+	echo "Definitions of table \"$tab_name\" exported successfully"
+else
+	echo "Failed to logon to Oracle Database, probably because the connection string is incorrect"
+	exit 1
+fi
+ 

@@ -1,0 +1,148 @@
+#!/bin/sh
+
+################################################################################
+#
+#	exptaball
+#
+#	A tool to export all table definitions from Oracle Database 
+#
+#	This tool has been tested in SQL*Plus 10 or above to give immediately
+#       usable DDL statements
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20090525	Kane Lai	First release
+#   1.0.1	20090628	Kane Lai	For use with exptab 1.1.0
+#						Allow specifying tablespace for
+#						data and index
+#   1.0.2	20090703	Kane Lai	Indicate the default
+#						tablespace in prep_tab script
+#   1.0.3	20100428	Kane Lai	Hints the user with the usage stat of  tablespaces
+#   1.0.4	20110523	Kane Lai	Minor cosmetic changes
+#   1.0.5	20110629	Kane Lai	Fixed ORA-02030 error
+#						Use a tmp file with name depending
+#						on the current user
+#						Cosmetic improvements
+#   1.0.6	20120330	Kane Lai	Use "who am i" instead of "whoami"
+#
+################################################################################
+
+
+version="1.0.6"
+
+if [ $# -lt 1 ]; then
+	echo "exptaball v$version - A tool to export all table definitions from Oracle Database"
+	echo "Exported table definitions will be named tab_(table_name).sql in the current directory"
+	echo "Usage:	`basename $0` [db_conn_str]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+tablist="tablist.txt"
+load_tab_script="load_tab.sql"
+prep_tab="prep_tab.sql"
+os_username=`who am i | cut -f1 -d' '`
+
+# create script to define storage for table
+echo "" > $prep_tab
+echo "set echo off" >> $prep_tab
+echo "set lin 160" >> $prep_tab
+echo "set verify off" >> $prep_tab
+echo "set feedback off" >> $prep_tab
+echo "set timing off" >> $prep_tab
+echo "set pages 0" >> $prep_tab
+echo "column id format 99999" >> $prep_tab
+echo "column tablespace_name format a60" >> $prep_tab
+echo "column status format a20" >> $prep_tab
+echo "column logging format a20" >> $prep_tab
+echo "column "Tablespace" format a60" >> $prep_tab
+echo "column "No. of tables" format 99999" >> $prep_tab
+echo "column "No. of indexes" format 99999" >> $prep_tab
+echo "select '' from dual;" >> $prep_tab
+echo "select '' from dual;" >> $prep_tab
+echo "select 'Available Tablespaces' from dual;" >> $prep_tab
+echo "select '=======================================================' from dual;" >> $prep_tab
+echo "set pages 500" >> $prep_tab
+echo "select rownum id, tablespace_name||decode(tablespace_name, default_tablespace, ' (Default)', '') tablespace_name, status, logging from user_tablespaces, user_users for update;" >> $prep_tab
+echo "set pages 0" >> $prep_tab
+echo "select '' from dual;" >> $prep_tab
+echo "select '' from dual;" >> $prep_tab
+echo "select 'Usage of Tablespaces in this Schema' from dual;" >> $prep_tab
+echo "select '=======================================================' from dual;" >> $prep_tab
+echo "set pages 500" >> $prep_tab
+echo "select tablespace_name \"Tablespace\",count(*) \"No. of tables\" from user_tables group by tablespace_name having tablespace_name is not null order by count(*) desc;" >> $prep_tab
+echo "select tablespace_name \"Tablespace\",count(*) \"No. of indexes\" from user_indexes group by tablespace_name having tablespace_name is not null order by count(*) desc;" >> $prep_tab
+echo "" >> $prep_tab
+echo "set pages 0" >> $prep_tab
+echo "select '' from dual;" >> $prep_tab
+echo "" >> $prep_tab
+echo "accept DATA_TABLESPACE_ID char prompt 'Select data tablespace by ID: '" >> $prep_tab
+echo "select 'Using data tablespace...' from dual;" >> $prep_tab
+echo "undefine DATA_TABLESPACE" >> $prep_tab
+echo "column tablespace_name new_value DATA_TABLESPACE" >> $prep_tab
+echo "select tablespace_name from (select rownum id, tablespace_name from user_tablespaces) where id = '&DATA_TABLESPACE_ID';" >> $prep_tab
+echo "undefine DATA_TABLESPACE_ID" >> $prep_tab
+echo "" >> $prep_tab
+echo "select '' from dual;" >> $prep_tab
+echo "" >> $prep_tab
+echo "accept INDEX_TABLESPACE_ID char prompt 'Select index tablespace by ID: '" >> $prep_tab
+echo "select 'Using index tablespace...' from dual;" >> $prep_tab
+echo "undefine INDEX_TABLESPACE" >> $prep_tab
+echo "column tablespace_name new_value INDEX_TABLESPACE" >> $prep_tab
+echo "select tablespace_name from (select rownum id, tablespace_name from user_tablespaces) where id = '&INDEX_TABLESPACE_ID';" >> $prep_tab
+echo "undefine INDEX_TABLESPACE_ID" >> $prep_tab
+echo "" >> $prep_tab
+echo "select '' from dual;" >> $prep_tab
+echo "" >> $prep_tab
+echo "rollback;" >> $prep_tab
+echo "" >> $prep_tab
+echo "set feedback on" >> $prep_tab
+echo "set verify on" >> $prep_tab
+
+# generate export script
+export_script="/tmp/export_"$os_username".sql"
+echo "" > $export_script
+echo "set echo off" >> $export_script
+echo "set pages 0 lines 32767" >> $export_script
+echo "set heading off" >> $export_script
+echo "set verify off" >> $export_script
+echo "set termout off" >> $export_script
+echo "set feedback off" >> $export_script
+echo "set trims on" >> $export_script
+echo "set scan off" >> $export_script
+echo "set timing off" >> $export_script
+echo >> $export_script
+echo "spool $tablist" >> $export_script
+#echo "select tname from tab;" >> $export_script
+echo "select table_name from user_tables where table_name not like '%/%' order by table_name;" >> $export_script
+echo "spool off" >> $export_script
+echo >> $export_script
+echo "exit" >> $export_script
+echo >> $export_script
+
+# execute export script
+sqlplus -SL $db_conn_str @$export_script > /dev/null
+
+# prepare script to load tab automatically
+if [ -f $load_tab_script ]; then
+	rm $load_tab_script
+fi
+touch $load_tab_script
+
+# export package from db using exptab
+cat $tablist | tr '[:upper:]' '[:lower:]' | while read line
+do
+	`dirname $0`/exptab $db_conn_str $line
+        echo '@tab_'$line'.sql' | tr '[$]' '[_]' >> $load_tab_script
+done
+rm $tablist
+echo '@prep_tab.sql' | tr '[$]' '[_]' | cat - $load_tab_script > /tmp/out && mv /tmp/out $load_tab_script
+ 

@@ -1,0 +1,79 @@
+#!/bin/sh
+
+################################################################################
+#
+#	expfunc
+#
+#	A tool to export functions from Oracle Database 
+#
+#	This tool has been tested in Oracle Database 7 to give immediately loadable
+#	functions
+#
+#	Known issues:
+#	- exported wrapped source could not be loaded back to the DB; extra new lines should be removed every 4000 characters
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	200902525	Kane Lai	First release
+#
+################################################################################
+
+
+version="1.0.0"
+
+if [ $# -lt 2 ]; then
+	echo "expfunc v$version - A tool to export functions from Oracle Database"
+	echo "Exported functions will be named func_(function_name).sql in the current directory"
+	echo "Usage:	`basename $0` [db_conn_str function_name]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"function_name\": Oracle function name, which is case in-sensitive, e.g. do_batch_job"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+        exit 1
+fi
+
+# change function name to upper case
+func_name="`echo $2 | tr "[:lower:]" "[:upper:]"`"
+
+# get the lower case function name
+func_name_lower="`echo $func_name | tr "[:upper:]" "[:lower:]"`"
+func=`echo "func_"$func_name_lower".sql" | tr '[$]' '[_]'`
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+set echo off
+set maxdata 50000
+set long 50000
+set longchunksize 1000
+set pages 0 lines 32767
+set heading off
+set verify off
+set termout off
+set feedback off
+set trims on
+set timing off
+spool $func
+prompt create or replace
+select text from user_source where name='$func_name' and type='FUNCTION';
+prompt /
+prompt show err
+spool off
+exit
+EOSQL
+
+# confirm the export was successful
+is_ok=`grep -ic $func_name $func`
+if [ $is_ok -lt 1 ]; then
+	echo "Failed to export function \"$func_name\", probably because the function does not exist or is inaccessible"
+	rm $func
+	exit 1
+fi
+
+# export successful
+echo "Function \"$func_name\" exported successfully"
+ 

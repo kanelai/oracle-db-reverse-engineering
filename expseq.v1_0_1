@@ -1,0 +1,84 @@
+#!/bin/sh
+
+################################################################################
+#
+#	expseq
+#
+#	A tool to export sequence definitions from Oracle Database 
+#
+#	This tool has been tested in Oracle 10g to give immediately usable
+#	DDL statements
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20090528	Kane Lai	First release
+#   1.0.1	20100428	Kane Lai	Fixed checking of whether the sequence exists
+#
+################################################################################
+
+
+version="1.0.1"
+
+if [ $# -lt 2 ]; then
+	echo "expseq v$version - A tool to export sequence definitions from Oracle Database"
+	echo "Exported sequence definitions will be named seq_(sequence_name).sql in the current directory"
+	echo "Usage:\t`basename $0` [db_conn_str sequence_name]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"sequence_name\": Oracle sequence name, which is case in-sensitive, e.g. customers_seq"
+	exit 1
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+	exit 1
+fi
+
+# change sequence name to upper case
+seq_name="`echo $2 | tr "[:lower:]" "[:upper:]"`"
+
+# get the lower case seq name
+seq_name_lower="`echo $seq_name | tr "[:upper:]" "[:lower:]"`"
+seq=`echo "seq_"$seq_name_lower".sql" | tr '[$]' '[_]'`
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+set echo off
+set maxdata 50000
+set long 50000
+set longchunksize 1000
+set pages 0 lines 32767
+set heading off
+set verify off
+set termout off
+set feedback off
+set trims on
+set timing off
+spool $seq
+select	'REM drop sequence $seq_name_lower;'||chr(10)||
+	'create sequence $seq_name_lower'||chr(10)||
+	decode(min_value,null,null,'minvalue ')||min_value||chr(10)||
+	decode(max_value,null,null,'maxvalue ')||max_value||chr(10)||
+	decode(cycle_flag,'Y','cycle','nocycle')||chr(10)||
+	decode(order_flag,'Y','order','noorder')||chr(10)||
+	decode(cache_size,0,'nocache','cache '||cache_size)||chr(10)||
+	'increment by '||increment_by||';'
+from	user_sequences
+where	sequence_name = '$seq_name';
+spool off
+exit
+EOSQL
+
+# confirm the export was successful
+is_ok=`grep -ic $seq_name $seq`
+if [ $is_ok -lt 1 ]; then
+	echo "Failed to export definitions of sequence \"$seq_name\", probably because the sequence does not exist or is inaccessible"
+	rm $seq
+	exit 1
+fi
+
+# export successful
+echo "Definitions of sequence \"$seq_name\" exported successfully"
+ 

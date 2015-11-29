@@ -1,0 +1,77 @@
+http://permalink.gmane.org/gmane.comp.db.postgresql.dbi-link/64
+
+
+
+Dear David,
+
+I didn't get to do any more work on DBI-Link.
+
+One piece of information that I thought might be worth sharing though,
+in particular with respect to your type mapping ideas, is how to
+translate Oracle data type to PostgreSQL data types. It requires some
+insight in both worlds:
+
+Numeric types:
+==============
+
+Oracle's BINARY_FLOAT corresponds to PostgreSQL's REAL.
+
+Oracle's BINARY_DOUBLE corresponds to PostgreSQL's DOUBLE PRECISION.
+
+Oracle does not have an integer data type, there is only NUMBER
+which corresponds to PostgreSQL's NUMERIC.
+
+If you want to be smart, you can translate Oracle NUMBERs without decimal
+fractions ($column->{DECIMAL_DIGITS} == 0) to INTEGER
+if $column->{COLUMN_SIZE} <= 9 and to BIGINT if $column->{COLUMN_SIZE} <= 18
+
+Date/Time:
+==========
+
+Oracle does not have a data type that would correspond to PostgreSQL's DATE.
+
+Oracle's DATE is a timestamp with seconds precision.
+
+On the other hand, PostgreSQL's TIMESTAMP(n) WITH TIME ZONE does not
+contain time zone information, it is an UTC timestamp.
+
+Still I would map Oracle's DATE and TIMESTAMP(n) to PostgreSQL's
+TIMESTAMP(n) WITHOUT TIME ZONE.
+
+Oracle's TIMESTAMP(n) WITH TIME ZONE and TIMESTAMP(n) WITH LOCAL TIME ZONE
+are best represented as PostgreSQL's TIMESTAMP(n) WITH TIME ZONE,
+although time zone information will be lost.
+
+Oracle does not have anything corresponding to PostgreSQL's TIME or
+TIME WITH TIMEZONE.
+
+Both Oracle's INTERVAL DAY(n) TO SECOND(m) and INTERVAL YEAR(n) TO MONTH
+can be represented by PostgreSQL's INTERVAL.
+
+Binary:
+=======
+
+Oracle's RAW(n), LONG RAW, BLOB and BFILE can be represented as BYTEA,
+although RAW(n) will be rendered in hex and would need extra processing.
+
+String:
+=======
+
+Oracle's CHAR(n) and NCHAR(n) correspond to PostgreSQL's CHARACTER(n).
+
+Oracle's VARCHAR2(n) and NVARCHAR2(n) correspond to PostgreSQL's
+CHARACTER VARYING(n).
+
+Oracle's LONG, CLOB and NCLOB data types correspond to PostgreSQL's TEXT.
+
+The text formats of some of these Oracle data types are influenced by
+session parameters/environment variables:
+
+- The first character of NLS_NUMERIC_CHARACTERS will be used as decimal separator.
+- NLS_DATE_FORMAT will determine how DATE values will be converted to strings.
+- NLS_TIMESTAMP_FORMAT will determine the representation of TIMESTAMP(n).
+- NLS_TIMESTAMP_TZ_FORMAT will determine how TIMESTAMP(n) WITH [LOCAL] TIME ZONE si displayed.
+
+Yours,
+Laurenz Albe
+

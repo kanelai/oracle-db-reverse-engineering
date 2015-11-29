@@ -1,0 +1,114 @@
+#!/bin/sh
+
+################################################################################
+#
+#	expsynall
+#
+#	A tool to export all synonyms from Oracle Database 
+#
+#	This tool has been tested in Oracle 10g to give immediately loadable
+#	synonyms
+#
+#
+#   Version	Date		Modified by	Descriptions
+#  --------------------------------------------------------------------------
+#   1.0.0	20090601	Kane Lai	First release
+#   1.0.1	20090609	Kane Lai	Exports script to grant required
+#						privileges to actually use the
+#						synonyms (for synonyms to local
+#						objects)
+#
+################################################################################
+
+
+version="1.0.1"
+
+load_syn_script="load_syn.sql"
+load_syn_priv_script="load_syn_priv.sql"
+priv_user="<USER>"
+
+if [ $# -lt 1 ]; then
+	echo "expsyn v$version - A tool to export synonyms from Oracle Database"
+	echo "Exported synonyms will be named $load_syn_script in the current directory"
+	echo "Exported privileges granting script will be named $load_syn_priv_script in the current directory"
+	echo "Usage:\t`basename $0` [db_conn_str [priv_user]]"
+	echo "    \"db_conn_str\": Oracle Database connection string to be passed to sqlplus, e.g. admin/mypassword@ora10g"
+	echo "    \"priv_user\": Name of the user to be granted privileges to use the synonyms. Default is $priv_user."
+	exit 1
+elif [ $# -gt 1 ]; then
+	priv_user=$2
+fi
+
+db_conn_str=$1
+is_conn_str_ok=`echo $db_conn_str | grep -ic /`
+if [ $is_conn_str_ok -ne 1 ]; then
+	echo "Oracle Database connection string must be of the format \"username/password[@connect_identifier]\""
+        exit 1
+fi
+
+# prepare script to load synonym automatically
+if [ -f $load_syn_script ]; then
+	rm $load_syn_script
+fi
+touch $load_syn_script
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+set echo off
+set maxdata 50000
+set long 50000
+set longchunksize 1000
+set pages 0 lines 32767
+set heading off
+set verify off
+set termout off
+set feedback off
+set trims on
+set timing off
+spool $load_syn_script
+select 'create or replace synonym '||synonym_name||' for '||decode(table_owner,null,'',table_owner||'.')||table_name||decode(db_link,null,'','@'||db_link)||';' from user_synonyms;
+spool off
+exit
+EOSQL
+
+# prepare script to grant privileges automatically
+if [ -f $load_syn_priv_script ]; then
+	rm $load_syn_priv_script
+fi
+touch $load_syn_priv_script
+
+# execute SQL script
+sqlplus -SL $db_conn_str << EOSQL >> /dev/null
+set echo off
+set maxdata 50000
+set long 50000
+set longchunksize 1000
+set pages 0 lines 32767
+set heading off
+set verify off
+set termout off
+set feedback off
+set trims on
+spool $load_syn_priv_script
+
+select unique
+	'grant '||
+	decode(o.object_type, 'TABLE', 'select, insert, update, delete', 'PACKAGE', 'execute')||
+	' on '||
+	decode(s.table_owner, null, '', s.table_owner||'.')||
+	s.table_name||
+	decode(s.db_link, null, '', '@'||s.db_link)||
+	' to $priv_user;'
+from	(select unique table_owner, table_name, db_link from user_synonyms) s,
+	(select unique object_name, object_type from user_objects where object_type='PACKAGE' or object_type='TABLE') o
+where	s.table_name = o.object_name;
+
+prompt /
+prompt show err
+spool off
+exit
+EOSQL
+
+# export successful
+echo "Synonyms exported successfully"
+ 
